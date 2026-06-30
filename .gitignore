@@ -1,0 +1,18 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+data/*.json
+data/*.jsonl
+data/*.log
+data/*.pid
+data/public_url.txt
+!data/.gitkeep
+tools/cloudflared
+
+# Keep private assignment artifacts out of the PUBLIC Hugging Face Space repo
+*.png
+*.docx
+제출_내용.md
+SUBMISSION.md

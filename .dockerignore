@@ -1,0 +1,21 @@
+# Secrets — never bake into the image
+.env
+.env.*
+!.env.example
+
+# Live runtime state — start the public demo clean (avoids leaking chat history,
+# approvals, account numbers, and the auto_pilot_llm=true cost footgun)
+data/
+
+# Local-only / heavy / irrelevant to the running app
+.venv/
+.git/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+tools/
+tests/
+*.png
+*.docx
+scripts/

@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KIS Trading Agent</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">SK AI Agent</p>
+        <h1>KIS Trading Agent</h1>
+      </div>
+      <div class="status-strip">
+        <span id="envBadge" class="badge">loading</span>
+        <span id="liveBadge" class="badge muted">live lock</span>
+        <span id="limitBadge" class="badge muted">limit</span>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="workspace">
+        <aside class="left-rail">
+          <div id="settingsPanel" class="panel">
+            <div class="panel-head">
+              <h2>설정</h2>
+              <span class="mini-state">런타임</span>
+            </div>
+            <label for="envSelect">환경 (실행 모드)</label>
+            <select id="envSelect">
+              <option value="mock">mock · 시뮬레이션</option>
+              <option value="paper">paper · 모의투자</option>
+              <option value="prod">prod · 실전</option>
+            </select>
+            <div class="field-grid">
+              <label>
+                1회 한도(원)
+                <input id="maxOrderKrw" type="number" min="1" step="1000" />
+              </label>
+              <label>
+                1회 한도($)
+                <input id="maxOrderUsd" type="number" min="0.01" step="1" />
+              </label>
+            </div>
+            <label class="check-row">
+              <input id="dryRunDefault" type="checkbox" checked />
+              기본 드라이런 (주문 시뮬레이션)
+            </label>
+            <label class="check-row danger-row">
+              <input id="liveOrders" type="checkbox" />
+              실주문 허용 (live) · 토큰 필요
+            </label>
+            <label class="check-row danger-row">
+              <input id="autoTrade" type="checkbox" />
+              자동 체결 (대화 시 즉시 매매)
+            </label>
+            <label class="check-row danger-row">
+              <input id="autoPilot" type="checkbox" />
+              자율 매매 (백그라운드 스케줄러)
+            </label>
+            <label class="check-row">
+              <input id="autoPilotLlm" type="checkbox" />
+              자율매매에 LLM 사용 · 토큰 필요
+            </label>
+            <label for="autoInterval">스캔 간격(초)</label>
+            <input id="autoInterval" type="number" min="15" step="15" value="300" />
+            <label for="dashTokenInput">대시보드 토큰</label>
+            <input
+              id="dashTokenInput"
+              type="password"
+              autocomplete="off"
+              placeholder="paper/prod 전환·주문 시 필요"
+            />
+            <p id="settingsHint" class="settings-hint neutral"></p>
+          </div>
+
+          <form id="analyzeForm" class="panel">
+            <div class="panel-head">
+              <h2>종목 분석</h2>
+              <button class="icon-button" type="submit" aria-label="분석 실행" title="분석 실행">
+                <i data-lucide="search"></i>
+              </button>
+            </div>
+            <label for="symbolInput">종목코드</label>
+            <div class="inline-input">
+              <input id="symbolInput" name="symbol" value="005930" maxlength="7" autocomplete="off" />
+              <button type="submit">
+                <i data-lucide="activity"></i>
+                분석
+              </button>
+            </div>
+          </form>
+
+          <form id="screenForm" class="panel">
+            <div class="panel-head">
+              <h2>관심종목</h2>
+              <button class="icon-button" type="submit" aria-label="스캔 실행" title="스캔 실행">
+                <i data-lucide="radar"></i>
+              </button>
+            </div>
+            <label for="watchlistInput">목록</label>
+            <textarea id="watchlistInput" rows="4">005930,000660,035420,051910,005380</textarea>
+            <button class="full-button" type="submit">
+              <i data-lucide="list-filter"></i>
+              스캔
+            </button>
+          </form>
+
+          <form id="orderForm" class="panel">
+            <div class="panel-head">
+              <h2>주문 티켓</h2>
+              <span id="orderState" class="mini-state">대기</span>
+            </div>
+            <div class="field-grid">
+              <label>
+                종목
+                <input id="orderSymbol" value="005930" maxlength="7" autocomplete="off" />
+              </label>
+              <label>
+                구분
+                <select id="orderSide">
+                  <option value="buy">매수</option>
+                  <option value="sell">매도</option>
+                </select>
+              </label>
+              <label>
+                수량
+                <input id="orderQty" type="number" min="1" value="1" />
+              </label>
+              <label>
+                지정가
+                <input id="orderPrice" type="number" min="0" step="any" value="0" />
+              </label>
+            </div>
+            <label class="check-row">
+              <input id="dryRun" type="checkbox" checked />
+              드라이런
+            </label>
+            <button class="full-button" type="submit">
+              <i data-lucide="shield-check"></i>
+              리스크 체크
+            </button>
+            <div id="approvalBox" class="approval-box hidden">
+              <input id="confirmText" placeholder="실전 확인 문구" autocomplete="off" />
+              <button id="executeButton" type="button">
+                <i data-lucide="send"></i>
+                실행
+              </button>
+            </div>
+          </form>
+
+          <div class="panel agent-hint">
+            <div class="panel-head">
+              <h2>Agent 대화</h2>
+              <span id="llmBadge" class="mini-state">대화</span>
+            </div>
+            <p class="neutral">
+              국내·미국 주식 모두 가능. 예) "삼성전자랑 SK하이닉스 비교해줘",
+              "테슬라랑 엔비디아 중 뭐가 나아?", "AAPL 10주 매수 초안 잡아줘", "미국 잔고 알려줘"
+            </p>
+          </div>
+        </aside>
+
+        <section class="main-stage">
+          <nav class="tabs" aria-label="결과 탭">
+            <button class="tab active" data-tab="chat">대화</button>
+            <button class="tab" data-tab="report">리포트</button>
+            <button class="tab" data-tab="screen">스캔</button>
+            <button class="tab" data-tab="orders">주문</button>
+            <button class="tab" data-tab="balance">잔고</button>
+            <button class="tab" data-tab="logs">로그</button>
+          </nav>
+
+          <section id="chatTab" class="tab-panel active">
+            <div class="chat-toolbar">
+              <div class="chat-config">
+                <select id="modelSelect" class="inline-select" title="모델 선택"></select>
+                <label class="thinking-toggle" title="적응형 사고(adaptive thinking)">
+                  <input type="checkbox" id="thinkingToggle" />
+                  <span>🧠 thinking</span>
+                </label>
+              </div>
+              <button id="newChat" type="button" class="ghost-button">＋ 새 대화</button>
+            </div>
+            <div id="chatThread" class="chat-thread" aria-live="polite"></div>
+            <form id="chatForm" class="chat-composer">
+              <input
+                id="chatInput"
+                placeholder="에이전트에게 요청하세요…"
+                autocomplete="off"
+                value="삼성전자랑 SK하이닉스 비교해줘"
+              />
+              <button type="submit" aria-label="전송" title="전송">
+                <i data-lucide="send"></i>
+              </button>
+            </form>
+          </section>
+
+          <section id="reportTab" class="tab-panel">
+            <div id="reportEmpty" class="empty-state">
+              <i data-lucide="line-chart"></i>
+              <p>분석 대기 중</p>
+            </div>
+            <div id="reportContent" class="report-content hidden"></div>
+          </section>
+
+          <section id="screenTab" class="tab-panel">
+            <div id="screenContent" class="table-wrap"></div>
+          </section>
+
+          <section id="ordersTab" class="tab-panel">
+            <div id="orderContent" class="order-content"></div>
+          </section>
+
+          <section id="balanceTab" class="tab-panel">
+            <div class="panel-head log-head">
+              <h2>잔고 / 포지션</h2>
+              <div class="head-actions">
+                <select id="balanceMarket" class="inline-select">
+                  <option value="KR">🇰🇷 국내 (KRW)</option>
+                  <option value="US">🇺🇸 미국 (USD)</option>
+                </select>
+                <button id="refreshBalance" class="icon-button" type="button" aria-label="새로고침" title="새로고침">
+                  <i data-lucide="refresh-cw"></i>
+                </button>
+              </div>
+            </div>
+            <div id="balanceContent" class="order-content">
+              <div class="empty-state"><p>잔고를 불러오세요.</p></div>
+            </div>
+          </section>
+
+          <section id="logsTab" class="tab-panel">
+            <div class="panel-head log-head">
+              <h2>실행 로그</h2>
+              <button id="refreshLogs" class="icon-button" type="button" aria-label="새로고침" title="새로고침">
+                <i data-lucide="refresh-cw"></i>
+              </button>
+            </div>
+            <div id="logsContent" class="logs"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <!-- Vendored locally so the public demo never depends on an external CDN. -->
+    <script src="/static/lucide.min.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
+

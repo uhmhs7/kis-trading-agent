@@ -1,0 +1,24 @@
+[project]
+name = "sk-aiagent"
+version = "0.1.0"
+description = "Risk-guarded KIS Open API trading agent for stock analysis, paper trading, and approval-based live orders."
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.111,<1.0",
+    "uvicorn[standard]>=0.29,<1.0",
+    "requests>=2.32,<3.0",
+    "python-dotenv>=1.0,<2.0",
+    "pydantic>=2,<3",
+    "anthropic>=0.69,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9.0",
+    "httpx>=0.27",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
