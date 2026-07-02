@@ -115,14 +115,83 @@ h2 {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(290px, 360px) minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 18px;
+  align-items: start;
 }
 
 .left-rail {
-  display: grid;
-  align-content: start;
+  position: relative;
+  align-self: start;
+}
+
+.rail-icons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 76px;
+}
+
+.rail-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 12px 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.rail-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.rail-icon:hover {
+  border-color: var(--blue);
+  color: var(--text);
+}
+
+.rail-icon.active {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #fff;
+}
+
+.rail-flyout {
+  position: absolute;
+  top: 0;
+  left: 88px;
+  width: 330px;
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
+  display: none;
+  flex-direction: column;
   gap: 14px;
+  padding: 2px;
+  z-index: 40;
+}
+
+.rail-flyout.open {
+  display: flex;
+}
+
+.rail-flyout .panel {
+  box-shadow: var(--shadow);
+  margin: 0;
+}
+
+.rail-panel {
+  display: none;
+}
+
+.rail-panel.active {
+  display: block;
 }
 
 .panel {
@@ -240,7 +309,9 @@ button svg {
 }
 
 .main-stage {
-  min-height: calc(100vh - 150px);
+  height: calc(100vh - 140px);
+  display: flex;
+  flex-direction: column;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -254,6 +325,7 @@ button svg {
   padding: 10px;
   background: var(--surface-2);
   border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
 }
 
 .tab {
@@ -273,10 +345,20 @@ button svg {
 .tab-panel {
   display: none;
   padding: 22px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .tab-panel.active {
   display: block;
+}
+
+/* Chat fills the stage: thread grows/scrolls, composer stays pinned. */
+#chatTab.tab-panel.active {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .empty-state {
@@ -465,6 +547,7 @@ th {
   margin-bottom: 12px;
   font-size: 13px;
   font-weight: 700;
+  flex-shrink: 0;
 }
 
 .chat-config {
@@ -628,8 +711,9 @@ th {
 .chat-thread {
   display: grid;
   gap: 12px;
-  min-height: 360px;
-  max-height: calc(100vh - 280px);
+  align-content: start;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
 }
@@ -688,6 +772,7 @@ th {
   margin-top: 14px;
   padding-top: 14px;
   border-top: 1px solid var(--line);
+  flex-shrink: 0;
 }
 
 .hidden {
@@ -705,8 +790,33 @@ th {
     grid-template-columns: 1fr;
   }
 
+  .rail-icons {
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: auto;
+  }
+
+  .rail-flyout {
+    position: static;
+    left: auto;
+    width: auto;
+    max-height: none;
+    margin-top: 12px;
+  }
+
   .main-stage {
+    height: auto;
     min-height: 540px;
+  }
+
+  #chatTab.tab-panel.active {
+    display: block;
+    overflow: visible;
+  }
+
+  .chat-thread {
+    min-height: 360px;
+    max-height: 60vh;
   }
 }
 

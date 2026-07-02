@@ -22,7 +22,26 @@
     <main class="shell">
       <section class="workspace">
         <aside class="left-rail">
-          <div id="settingsPanel" class="panel">
+          <nav class="rail-icons" aria-label="설정 및 도구">
+            <button type="button" class="rail-icon" data-panel="settingsPanel" title="설정" aria-label="설정">
+              <i data-lucide="settings"></i><span>설정</span>
+            </button>
+            <button type="button" class="rail-icon" data-panel="analyzeForm" title="종목 분석" aria-label="종목 분석">
+              <i data-lucide="activity"></i><span>분석</span>
+            </button>
+            <button type="button" class="rail-icon" data-panel="screenForm" title="관심종목" aria-label="관심종목">
+              <i data-lucide="radar"></i><span>관심</span>
+            </button>
+            <button type="button" class="rail-icon" data-panel="orderForm" title="주문 티켓" aria-label="주문 티켓">
+              <i data-lucide="shopping-cart"></i><span>주문</span>
+            </button>
+            <button type="button" class="rail-icon" data-panel="agentHint" title="Agent 사용법" aria-label="Agent 사용법">
+              <i data-lucide="message-square"></i><span>도움</span>
+            </button>
+          </nav>
+
+          <div class="rail-flyout" id="railFlyout">
+            <div id="settingsPanel" class="panel rail-panel">
             <div class="panel-head">
               <h2>설정</h2>
               <span class="mini-state">런타임</span>
@@ -75,7 +94,7 @@
             <p id="settingsHint" class="settings-hint neutral"></p>
           </div>
 
-          <form id="analyzeForm" class="panel">
+          <form id="analyzeForm" class="panel rail-panel">
             <div class="panel-head">
               <h2>종목 분석</h2>
               <button class="icon-button" type="submit" aria-label="분석 실행" title="분석 실행">
@@ -92,7 +111,7 @@
             </div>
           </form>
 
-          <form id="screenForm" class="panel">
+          <form id="screenForm" class="panel rail-panel">
             <div class="panel-head">
               <h2>관심종목</h2>
               <button class="icon-button" type="submit" aria-label="스캔 실행" title="스캔 실행">
@@ -107,7 +126,7 @@
             </button>
           </form>
 
-          <form id="orderForm" class="panel">
+          <form id="orderForm" class="panel rail-panel">
             <div class="panel-head">
               <h2>주문 티켓</h2>
               <span id="orderState" class="mini-state">대기</span>
@@ -150,7 +169,7 @@
             </div>
           </form>
 
-          <div class="panel agent-hint">
+          <div class="panel agent-hint rail-panel" id="agentHint">
             <div class="panel-head">
               <h2>Agent 대화</h2>
               <span id="llmBadge" class="mini-state">대화</span>
@@ -159,6 +178,7 @@
               국내·미국 주식 모두 가능. 예) "삼성전자랑 SK하이닉스 비교해줘",
               "테슬라랑 엔비디아 중 뭐가 나아?", "AAPL 10주 매수 초안 잡아줘", "미국 잔고 알려줘"
             </p>
+          </div>
           </div>
         </aside>
 
@@ -247,6 +267,56 @@
     <!-- Vendored locally so the public demo never depends on an external CDN. -->
     <script src="/static/lucide.min.js"></script>
     <script src="/static/app.js"></script>
+    <!-- Left icon-rail flyout: independent of app.js (no shared IDs touched). -->
+    <script>
+      (function () {
+        function ready(fn) {
+          if (document.readyState !== "loading") fn();
+          else document.addEventListener("DOMContentLoaded", fn);
+        }
+        ready(function () {
+          var flyout = document.getElementById("railFlyout");
+          var icons = Array.prototype.slice.call(document.querySelectorAll(".rail-icon"));
+          if (!flyout || !icons.length) return;
+
+          function close() {
+            flyout.classList.remove("open");
+            icons.forEach(function (b) { b.classList.remove("active"); });
+          }
+          function open(id) {
+            document.querySelectorAll(".rail-panel").forEach(function (p) {
+              p.classList.toggle("active", p.id === id);
+            });
+            icons.forEach(function (b) { b.classList.toggle("active", b.dataset.panel === id); });
+            flyout.classList.add("open");
+          }
+
+          icons.forEach(function (btn) {
+            btn.addEventListener("click", function () {
+              var id = btn.dataset.panel;
+              if (flyout.classList.contains("open") && btn.classList.contains("active")) close();
+              else open(id);
+            });
+          });
+
+          // Click outside the flyout (and not on a rail icon) closes it.
+          document.addEventListener("click", function (e) {
+            if (!flyout.classList.contains("open")) return;
+            if (flyout.contains(e.target) || e.target.closest(".rail-icon")) return;
+            close();
+          });
+          document.addEventListener("keydown", function (e) {
+            if (e.key === "Escape") close();
+          });
+
+          // After running a tool, close the flyout so the result view isn't covered.
+          ["analyzeForm", "screenForm", "orderForm"].forEach(function (id) {
+            var f = document.getElementById(id);
+            if (f) f.addEventListener("submit", function () { setTimeout(close, 60); });
+          });
+        });
+      })();
+    </script>
   </body>
 </html>
 
