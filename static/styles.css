@@ -616,6 +616,25 @@ th {
   margin-bottom: 6px;
 }
 
+.ai-plan {
+  margin-top: 12px;
+}
+
+.ai-plan-btn {
+  width: 100%;
+}
+
+.ai-plan-result {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.ai-plan-rationale {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .auth-btn {
   display: inline-flex;
   align-items: center;

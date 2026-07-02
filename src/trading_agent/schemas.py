@@ -9,7 +9,7 @@ Market = Literal["KR", "US"]
 
 
 class AnalyzeRequest(BaseModel):
-    symbol: str = Field(..., examples=["005930", "AAPL"])
+    symbol: str = Field(..., min_length=1, max_length=12, examples=["005930", "AAPL"])
     market: Optional[Market] = None  # auto-detected from the symbol when omitted
 
 
@@ -32,17 +32,17 @@ class ChatRequest(BaseModel):
 
 
 class OrderPreviewRequest(BaseModel):
-    symbol: str
-    side: str = Field(..., examples=["buy"])
-    quantity: int = Field(..., gt=0)
-    limit_price: float = Field(..., gt=0)  # decimals allowed for USD
+    symbol: str = Field(..., min_length=1, max_length=12)
+    side: str = Field(..., max_length=8, examples=["buy"])
+    quantity: int = Field(..., gt=0, le=1_000_000)
+    limit_price: float = Field(..., gt=0, le=1_000_000_000)  # decimals allowed for USD
     dry_run: bool = True
     market: Optional[Market] = None
 
 
 class OrderExecuteRequest(BaseModel):
-    approval_id: str
-    confirm_text: str = ""
+    approval_id: str = Field(..., max_length=64)
+    confirm_text: str = Field(default="", max_length=64)
 
 
 class ConfigRequest(BaseModel):

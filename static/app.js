@@ -7,17 +7,24 @@ const state = {
   dashboardToken: sessionStorage.getItem("kis_dash_token") || "",
   chartPeriod: "3M",
   chartShowBB: false,
-  // Chart history cache: the fullest bar set loaded for the current symbol, and how
-  // many days we've already requested (so switching periods only fetches when needed).
+  // Chart history caches for the current symbol: daily bars (chartBars, covering
+  // chartReqDays) plus per-period weekly/monthly bars for the long ranges.
   chartBars: [],
   chartReqDays: 0,
+  chartLong: {},
   chartKey: "",
 };
 
-const PERIOD_BARS = { "1M": 22, "3M": 66, "6M": 130, "1Y": 252, "5Y": 1260, "10Y": 2520, "MAX": Infinity };
-// Calendar days of history to request from the backend per period (generous so
-// enough trading bars come back; the backend caps and paginates until data runs out).
-const PERIOD_DAYS = { "1M": 40, "3M": 110, "6M": 200, "1Y": 400, "5Y": 1950, "10Y": 3900, "MAX": 8000 };
+// Daily-slice counts for short ranges (cut from the cached daily bars).
+const PERIOD_BARS = { "1M": 22, "3M": 66, "6M": 130, "1Y": 252 };
+// Long ranges fetch on demand: 1Y refreshes the daily cache; 5Y/10Y use weekly and
+// MAX monthly candles straight from the backend (fast even on the real KIS API).
+const PERIOD_FETCH = {
+  "1Y": { days: 400, period: "D" },
+  "5Y": { days: 1900, period: "W" },
+  "10Y": { days: 3800, period: "W" },
+  "MAX": { days: 12000, period: "M" },
+};
 const COMPARE_COLORS = ["#1f6feb", "#16845b", "#c13b3a", "#9a6a00", "#7c4dff", "#0aa", "#e8890c", "#d6336c"];
 
 const $ = (selector) => document.querySelector(selector);
@@ -636,12 +643,13 @@ function renderReport(data) {
           ${riskItem("목표", money(plan.take_profit, cur))}
           ${riskItem("권장수량", `${fmt.format(plan.suggested_quantity)}주`)}
         </div>
+        <div id="aiPlanBox" class="ai-plan"></div>
       </article>
     </div>
 
     <section class="section-block">
       <div class="panel-head">
-        <h2>차트 (일봉)</h2>
+        <h2>차트 <span id="chartCaption" class="mini-state"></span></h2>
         <div class="chart-controls">
           <div class="period-toggle">
             <button type="button" data-period="1M">1M</button>
@@ -657,11 +665,13 @@ function renderReport(data) {
       </div>
       <div id="chartArea" class="chart-area"></div>
       <div id="rsiArea"></div>
+      <div id="macdArea"></div>
+      <div id="stochArea"></div>
       <div class="chart-legend">
         <span style="color:#e8890c">━ SMA5</span>
         <span style="color:#7c4dff">━ SMA20</span>
         <span style="color:#16845b">━ SMA60</span>
-        <span class="neutral">빨강=상승·파랑=하락 · 캔들에 커서를 올리면 상세</span>
+        <span class="neutral">점선=권장진입·손절·목표 · 보조지표: RSI/MACD/스토캐스틱 · 캔들에 커서를 올리면 상세</span>
       </div>
     </section>
 
@@ -693,11 +703,12 @@ function renderReport(data) {
   if (window.lucide) window.lucide.createIcons();
   // Seed the chart cache from the analysis window (~6M). Longer periods fetch more.
   const key = `${data.symbol}:${data.market}`;
-  if (state.chartKey !== key) state.chartPeriod = state.chartPeriod || "3M";
+  if (state.chartKey !== key) state.chartLong = {}; // long-range cache is per symbol
   state.chartBars = Array.isArray(data.recent_bars) ? data.recent_bars : [];
-  state.chartReqDays = PERIOD_DAYS["6M"];
+  state.chartReqDays = 200; // calendar days covered by the analysis window
   state.chartKey = key;
   setupChartControls();
+  setupAiPlan(data);
   drawReportChart();
 }
 
@@ -798,7 +809,11 @@ function buildPriceSVG(bars, currency, opts) {
   const yV = (v) => volTop + volH * (1 - v / maxV);
   const col = (b) => (b.close >= b.open ? "var(--red)" : "var(--blue)");
   const axisPrice = (p) => (currency === "USD" ? `$${usdFmt.format(p)}` : fmt.format(Math.round(p)));
-  const dateLabel = (s) => (s && s.length >= 8 ? `${s.slice(4, 6)}/${s.slice(6, 8)}` : "");
+  // Long ranges (weekly/monthly bars) label as YY.MM; short ranges as MM/DD.
+  const dateLabel = (s) => {
+    if (!s || s.length < 6) return "";
+    return opts.longRange ? `${s.slice(2, 4)}.${s.slice(4, 6)}` : `${s.slice(4, 6)}/${s.slice(6, 8)}`;
+  };
 
   let grid = "";
   [maxP, (maxP + minP) / 2, minP].forEach((p) => {
@@ -827,10 +842,21 @@ function buildPriceSVG(bars, currency, opts) {
     zones += `<rect class="hover-zone" data-i="${i}" x="${padL + slot * i}" y="${padT}" width="${slot}" height="${priceH + 8 + volH}" fill="transparent"/>`;
   });
 
+  // Risk-plan levels (entry/stop/target) as dashed horizontal lines when in range.
+  let levelLayer = "";
+  (opts.levels || []).forEach((lv) => {
+    const v = Number(lv.value);
+    if (!v || !(v > minP && v < maxP)) return;
+    const y = yP(v);
+    levelLayer +=
+      `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="${lv.color}" stroke-width="1" stroke-dasharray="5 4" opacity="0.85"/>` +
+      `<text x="${W - padR - 2}" y="${y - 3}" text-anchor="end" class="chart-axis" style="fill:${lv.color};font-weight:700">${lv.label} ${axisPrice(v)}</text>`;
+  });
+
   const sma = (p, color) => polyline(x, yP, smaSeries(closes, p), color);
   return {
-    svg: `<svg viewBox="0 0 ${W} ${H}" class="price-chart" preserveAspectRatio="xMidYMid meet" role="img" aria-label="일봉 차트">
-      ${grid}${bbLayer}${vols}${candles}${sma(5, "#e8890c")}${sma(20, "#7c4dff")}${sma(60, "#16845b")}${zones}
+    svg: `<svg viewBox="0 0 ${W} ${H}" class="price-chart" preserveAspectRatio="xMidYMid meet" role="img" aria-label="가격 차트">
+      ${grid}${bbLayer}${vols}${candles}${sma(5, "#e8890c")}${sma(20, "#7c4dff")}${sma(60, "#16845b")}${levelLayer}${zones}
     </svg>`,
   };
 }
@@ -853,6 +879,108 @@ function buildRSISVG(bars) {
   </svg>`;
 }
 
+function emaSeries(values, period) {
+  const out = new Array(values.length).fill(null);
+  if (values.length < period) return out;
+  const k = 2 / (period + 1);
+  let sum = 0;
+  for (let i = 0; i < period; i++) sum += values[i];
+  let prev = sum / period; // seed with SMA
+  out[period - 1] = prev;
+  for (let i = period; i < values.length; i++) {
+    prev = values[i] * k + prev * (1 - k);
+    out[i] = prev;
+  }
+  return out;
+}
+
+function macdSeries(closes, fast = 12, slow = 26, signalP = 9) {
+  const emaF = emaSeries(closes, fast);
+  const emaS = emaSeries(closes, slow);
+  const macd = closes.map((_, i) => (emaF[i] != null && emaS[i] != null ? emaF[i] - emaS[i] : null));
+  const signal = new Array(closes.length).fill(null);
+  const first = macd.findIndex((v) => v != null);
+  if (first >= 0) {
+    emaSeries(macd.slice(first), signalP).forEach((v, i) => {
+      if (v != null) signal[first + i] = v;
+    });
+  }
+  const hist = macd.map((v, i) => (v != null && signal[i] != null ? v - signal[i] : null));
+  return { macd, signal, hist };
+}
+
+function buildMACDSVG(bars) {
+  const W = 760, H = 110, padL = 64, padR = 12, padT = 12, padB = 14;
+  const closes = bars.map((b) => b.close);
+  const { macd, signal, hist } = macdSeries(closes);
+  const vals = [...macd, ...signal, ...hist].filter((v) => v != null);
+  if (vals.length < 2) return "";
+  const maxV = Math.max(...vals, 0), minV = Math.min(...vals, 0);
+  const range = maxV - minV || 1;
+  const n = bars.length;
+  const slot = (W - padL - padR) / n;
+  const x = (i) => padL + slot * (i + 0.5);
+  const y = (v) => padT + (H - padT - padB) * (1 - (v - minV) / range);
+  const zeroY = y(0);
+  const bw = Math.max(1, Math.min(7, slot * 0.5));
+  let histRects = "";
+  hist.forEach((v, i) => {
+    if (v == null) return;
+    const yy = y(v);
+    histRects += `<rect x="${x(i) - bw / 2}" y="${Math.min(yy, zeroY)}" width="${bw}" height="${Math.max(1, Math.abs(yy - zeroY))}" fill="${v >= 0 ? "var(--red)" : "var(--blue)"}" opacity="0.4"/>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" class="rsi-chart" preserveAspectRatio="xMidYMid meet" aria-label="MACD">
+    <line x1="${padL}" y1="${zeroY}" x2="${W - padR}" y2="${zeroY}" stroke="var(--line)" stroke-width="0.7"/>
+    ${histRects}${polyline(x, y, macd, "#1f6feb", 1.5)}${polyline(x, y, signal, "#e8890c", 1.2)}
+    <text x="${padL}" y="${padT - 2}" class="chart-axis">MACD(12,26,9)</text>
+  </svg>`;
+}
+
+function stochSeries(bars, kP = 14, smooth = 3, dP = 3) {
+  const n = bars.length;
+  const rawK = new Array(n).fill(null);
+  for (let i = kP - 1; i < n; i++) {
+    let hi = -Infinity, lo = Infinity;
+    for (let j = i - kP + 1; j <= i; j++) {
+      hi = Math.max(hi, bars[j].high);
+      lo = Math.min(lo, bars[j].low);
+    }
+    rawK[i] = hi === lo ? 50 : ((bars[i].close - lo) / (hi - lo)) * 100;
+  }
+  const smaOf = (series, p) => {
+    const out = new Array(n).fill(null);
+    for (let i = p - 1; i < n; i++) {
+      let s = 0, ok = true;
+      for (let j = i - p + 1; j <= i; j++) {
+        if (series[j] == null) { ok = false; break; }
+        s += series[j];
+      }
+      if (ok) out[i] = s / p;
+    }
+    return out;
+  };
+  const k = smaOf(rawK, smooth); // slow %K
+  return { k, d: smaOf(k, dP) };
+}
+
+function buildStochSVG(bars) {
+  const W = 760, H = 90, padL = 64, padR = 12, padT = 12, padB = 14;
+  const { k, d } = stochSeries(bars);
+  if (!k.some((v) => v != null)) return "";
+  const n = bars.length;
+  const x = (i) => padL + ((W - padL - padR) / n) * (i + 0.5);
+  const y = (v) => padT + (H - padT - padB) * (1 - v / 100);
+  let g = "";
+  [80, 50, 20].forEach((lvl) => {
+    g += `<line x1="${padL}" y1="${y(lvl)}" x2="${W - padR}" y2="${y(lvl)}" stroke="var(--line)" stroke-width="0.5" ${lvl !== 50 ? 'stroke-dasharray="3 3"' : ""}/>`;
+    g += `<text x="${padL - 6}" y="${y(lvl) + 3}" text-anchor="end" class="chart-axis">${lvl}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" class="rsi-chart" preserveAspectRatio="xMidYMid meet" aria-label="Stochastic">
+    ${g}${polyline(x, y, k, "#1f6feb", 1.5)}${polyline(x, y, d, "#e8890c", 1.2)}
+    <text x="${padL}" y="${padT - 2}" class="chart-axis">Stochastic(14,3,3) — %K 파랑 · %D 주황</text>
+  </svg>`;
+}
+
 function mountPriceChart(container, bars, currency, opts) {
   const built = buildPriceSVG(bars, currency, opts);
   container.innerHTML = built.svg + `<div class="chart-tooltip hidden"></div>`;
@@ -862,8 +990,11 @@ function mountPriceChart(container, bars, currency, opts) {
     z.addEventListener("mouseenter", () => {
       const b = bars[Number(z.dataset.i)];
       const up = b.close >= b.open;
+      const dlabel = opts && opts.longRange
+        ? `${b.date.slice(0, 4)}/${b.date.slice(4, 6)}/${b.date.slice(6, 8)}`
+        : `${b.date.slice(4, 6)}/${b.date.slice(6, 8)}`;
       tip.innerHTML =
-        `<strong>${b.date.slice(4, 6)}/${b.date.slice(6, 8)}</strong> ` +
+        `<strong>${dlabel}</strong> ` +
         `시 ${money(b.open, currency)} · 고 ${money(b.high, currency)} · 저 ${money(b.low, currency)} · ` +
         `종 <b class="${up ? "positive" : "negative"}">${money(b.close, currency)}</b> · 거래량 ${fmt.format(b.volume)}`;
       tip.classList.remove("hidden");
@@ -879,15 +1010,42 @@ function drawReportChart() {
   const data = state.currentAnalysis;
   const area = $("#chartArea");
   if (!data || !area) return;
-  const all = state.chartBars && state.chartBars.length ? state.chartBars : data.recent_bars || [];
-  if (!all.length) return;
+  const p = state.chartPeriod;
+  const spec = PERIOD_FETCH[p];
+  const longMode = !!(spec && spec.period !== "D");
+
+  let bars;
+  let unit = "일봉";
+  if (longMode && state.chartLong[p] && state.chartLong[p].length) {
+    bars = state.chartLong[p];
+    unit = spec.period === "W" ? "주봉" : "월봉";
+  } else {
+    // Daily source (short ranges, or a failed long fetch falling back gracefully).
+    const all = state.chartBars && state.chartBars.length ? state.chartBars : data.recent_bars || [];
+    if (!all.length) return;
+    const count = PERIOD_BARS[p] || all.length;
+    bars = all.slice(-Math.min(count, all.length));
+  }
+  bars = aggregateBars(bars, 600); // cap drawn candles for performance
   const cur = data.currency || "KRW";
-  const count = PERIOD_BARS[state.chartPeriod] || all.length;
-  const sliced = all.slice(-Math.min(count, all.length));
-  const bars = aggregateBars(sliced, 600); // cap drawn candles for performance
-  mountPriceChart(area, bars, cur, { showBB: state.chartShowBB });
+  const plan = data.risk_plan || {};
+  mountPriceChart(area, bars, cur, {
+    showBB: state.chartShowBB,
+    longRange: unit !== "일봉",
+    levels: [
+      { label: "진입", value: plan.entry_reference, color: "#1f6feb" },
+      { label: "손절", value: plan.stop_loss, color: "#c13b3a" },
+      { label: "목표", value: plan.take_profit, color: "#16845b" },
+    ],
+  });
   const rsiEl = $("#rsiArea");
   if (rsiEl) rsiEl.innerHTML = buildRSISVG(bars);
+  const macdEl = $("#macdArea");
+  if (macdEl) macdEl.innerHTML = buildMACDSVG(bars);
+  const stochEl = $("#stochArea");
+  if (stochEl) stochEl.innerHTML = buildStochSVG(bars);
+  const cap = $("#chartCaption");
+  if (cap) cap.textContent = `${unit} · ${fmt.format(bars.length)}봉`;
   setActivePeriodButton(state.chartPeriod);
 }
 
@@ -897,23 +1055,31 @@ function setActivePeriodButton(period) {
   );
 }
 
-// Switch chart period; fetch deeper history on demand (only when we don't already
-// have enough). Recently-listed names just return fewer bars — no refetch loop.
+// Switch chart period; fetch deeper history on demand. 1Y refreshes the daily
+// cache; 5Y/10Y/MAX fetch weekly/monthly candles once and cache them per period.
+// Recently-listed names just return fewer bars — no refetch loop.
 async function selectPeriod(period) {
   state.chartPeriod = period;
   setActivePeriodButton(period);
   const data = state.currentAnalysis;
-  const needDays = PERIOD_DAYS[period] || PERIOD_DAYS["6M"];
-  if (data && needDays > state.chartReqDays) {
+  const spec = PERIOD_FETCH[period];
+  const needsFetch =
+    data && spec && (spec.period === "D" ? spec.days > state.chartReqDays : !state.chartLong[period]);
+  if (needsFetch) {
     const area = $("#chartArea");
     if (area) area.innerHTML = `<p class="neutral" style="padding:24px">📈 히스토리 불러오는 중…</p>`;
     try {
       const res = await api(
-        `/api/prices?symbol=${encodeURIComponent(data.symbol)}&market=${encodeURIComponent(data.market)}&days=${needDays}`,
+        `/api/prices?symbol=${encodeURIComponent(data.symbol)}&market=${encodeURIComponent(data.market)}` +
+          `&days=${spec.days}&period=${spec.period}`,
       );
       if (res && Array.isArray(res.bars) && res.bars.length) {
-        state.chartBars = res.bars;
-        state.chartReqDays = needDays; // mark coverage so we don't refetch shorter ranges
+        if (spec.period === "D") {
+          state.chartBars = res.bars;
+          state.chartReqDays = spec.days; // coverage marker — don't refetch shorter ranges
+        } else {
+          state.chartLong[period] = res.bars;
+        }
       }
     } catch (error) {
       // Keep whatever bars we already have; just redraw.
@@ -934,6 +1100,57 @@ function setupChartControls() {
       drawReportChart();
     });
   }
+}
+
+// ---- AI risk plan (LLM-judged entry/stop/target, on demand) ----------------
+function setupAiPlan(data) {
+  const box = $("#aiPlanBox");
+  if (!box) return;
+  if (!state.status || !state.status.llm_ready) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML =
+    `<button id="aiPlanBtn" type="button" class="ghost-button ai-plan-btn">🤖 AI 리스크 플랜</button>` +
+    `<div id="aiPlanResult"></div>`;
+  $("#aiPlanBtn").addEventListener("click", async () => {
+    const btn = $("#aiPlanBtn");
+    btn.disabled = true;
+    btn.textContent = "AI 분석 중…";
+    try {
+      const plan = await api("/api/analyze/ai-plan", { symbol: data.symbol, market: data.market });
+      renderAiPlan(plan, data);
+    } catch (error) {
+      const out = $("#aiPlanResult");
+      if (out) out.innerHTML = `<p class="negative ai-plan-rationale">${escapeHtml(error.message)}</p>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "🤖 AI 리스크 플랜";
+    }
+  });
+}
+
+function renderAiPlan(plan, data) {
+  const cur = plan.currency || data.currency || "KRW";
+  const out = $("#aiPlanResult");
+  if (!out) return;
+  out.innerHTML = `
+    <div class="ai-plan-result">
+      <div class="risk-grid">
+        ${riskItem("AI 진입", money(plan.entry_reference, cur))}
+        ${riskItem("AI 손절", money(plan.stop_loss, cur))}
+        ${riskItem("AI 목표", money(plan.take_profit, cur))}
+        ${riskItem("신뢰도", `${plan.confidence != null ? plan.confidence : "-"}%`)}
+      </div>
+      <p class="neutral ai-plan-rationale">${escapeHtml(plan.rationale || "")}</p>
+      <button id="aiApplyBtn" type="button" class="ghost-button">주문 티켓에 적용</button>
+    </div>`;
+  $("#aiApplyBtn").addEventListener("click", () => {
+    $("#orderSymbol").value = plan.symbol || data.symbol;
+    $("#orderPrice").value = plan.entry_reference;
+    if (plan.suggested_quantity > 0) $("#orderQty").value = plan.suggested_quantity;
+    setSettingsHint("AI 플랜을 주문 티켓에 적용했습니다.");
+  });
 }
 
 // ---- Comparison chart (scan tab): normalized % lines ----------------------

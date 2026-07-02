@@ -83,6 +83,49 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+# Candle period support: D=daily, W=weekly, M=monthly. Weekly/monthly come straight
+# from KIS (one row per week/month), so long ranges need only a handful of calls.
+PERIODS = {"D", "W", "M"}
+_PERIOD_WINDOW_DAYS = {"D": 150, "W": 730, "M": 3000}  # ~100 rows per request window
+
+
+def _bars_wanted(days: int, period: str) -> int:
+    """Approximate bar count covering `days` calendar days for the given period."""
+    if period == "W":
+        return max(20, days // 7 + 2)
+    if period == "M":
+        return max(12, days // 30 + 2)
+    return days
+
+
+def _aggregate_bars(bars: List[PriceBar], period: str) -> List[PriceBar]:
+    """Aggregate ascending daily bars into weekly/monthly OHLCV buckets (mock path)."""
+    def bucket(day: str):
+        if period == "M":
+            return day[:6]
+        iso = datetime.strptime(day, "%Y%m%d").date().isocalendar()
+        return (iso[0], iso[1])
+
+    out: List[PriceBar] = []
+    current = None
+    for bar in bars:
+        key = bucket(bar.date)
+        if key != current:
+            out.append(PriceBar(bar.date, bar.open, bar.high, bar.low, bar.close, bar.volume))
+            current = key
+        else:
+            last = out[-1]
+            out[-1] = PriceBar(
+                date=bar.date,
+                open=last.open,
+                high=max(last.high, bar.high),
+                low=min(last.low, bar.low),
+                close=bar.close,
+                volume=last.volume + bar.volume,
+            )
+    return out
+
+
 class KisClient:
     """Small KIS Open API REST client for the agent's required domestic-stock calls."""
 
@@ -176,20 +219,34 @@ class KisClient:
             currency="USD",
         )
 
-    def daily_prices(self, symbol: str, market: str = markets.KR, days: int = 100) -> List[PriceBar]:
+    def daily_prices(
+        self, symbol: str, market: str = markets.KR, days: int = 100, period: str = "D"
+    ) -> List[PriceBar]:
+        period = (period or "D").upper()
+        if period not in PERIODS:
+            period = "D"
         if self.settings.is_mock:
-            return self._mock_daily_prices(symbol, market, days=days)
+            return self._mock_history(symbol, market, days=days, period=period)
         if market == markets.US:
-            return self._overseas_daily(symbol, days=days)
-        return self._domestic_daily(symbol, days=days)
+            return self._overseas_daily(symbol, days=days, period=period)
+        return self._domestic_daily(symbol, days=days, period=period)
 
-    def _domestic_daily(self, symbol: str, days: int = 100) -> List[PriceBar]:
+    def _mock_history(self, symbol: str, market: str, days: int, period: str) -> List[PriceBar]:
+        if period == "D":
+            return self._mock_daily_prices(symbol, market, days=days)
+        daily = self._mock_daily_prices(symbol, market, days=min(days, 5200))
+        return _aggregate_bars(daily, period)[-_bars_wanted(days, period):]
+
+    def _domestic_daily(self, symbol: str, days: int = 100, period: str = "D") -> List[PriceBar]:
         # inquire-daily-itemchartprice returns at most ~100 rows per call, so page
-        # backward through date windows until we have `days` bars (or run out).
+        # backward through date windows (sized so one window ≈ 100 bars per period)
+        # until we have enough bars (or run out of history).
+        wanted = _bars_wanted(days, period)
+        window = _PERIOD_WINDOW_DAYS[period]
         collected: Dict[str, PriceBar] = {}
         end = date.today()
-        for _ in range(max(1, days // 90 + 2)):
-            start = end - timedelta(days=150)
+        for _ in range(max(1, wanted // 90 + 2)):
+            start = end - timedelta(days=window)
             payload = self._request(
                 "GET",
                 self.DAILY_PATH,
@@ -199,7 +256,7 @@ class KisClient:
                     "FID_INPUT_ISCD": symbol,
                     "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
                     "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
-                    "FID_PERIOD_DIV_CODE": "D",
+                    "FID_PERIOD_DIV_CODE": period,
                     "FID_ORG_ADJ_PRC": "0",
                 },
             )
@@ -227,20 +284,21 @@ class KisClient:
                 if bar.close > 0:
                     collected[day] = bar
                     added += 1
-            if len(collected) >= days or oldest is None or added == 0:
+            if len(collected) >= wanted or oldest is None or added == 0:
                 break
             next_end = datetime.strptime(oldest, "%Y%m%d").date() - timedelta(days=1)
             if next_end >= end:  # no backward progress — stop to avoid a loop
                 break
             end = next_end
-        return sorted(collected.values(), key=lambda item: item.date)[-days:]
+        return sorted(collected.values(), key=lambda item: item.date)[-wanted:]
 
-    def _overseas_daily(self, symbol: str, days: int = 100) -> List[PriceBar]:
+    def _overseas_daily(self, symbol: str, days: int = 100, period: str = "D") -> List[PriceBar]:
         # dailyprice returns up to ~100 rows ending at BYMD; page backward by BYMD.
+        wanted = _bars_wanted(days, period)
         price_excd, _ = markets.us_exchanges(symbol)
         collected: Dict[str, PriceBar] = {}
         bymd = ""  # empty = most recent
-        for _ in range(max(1, days // 90 + 2)):
+        for _ in range(max(1, wanted // 90 + 2)):
             payload = self._request(
                 "GET",
                 self.OVERSEAS_DAILY_PATH,
@@ -249,7 +307,7 @@ class KisClient:
                     "AUTH": "",
                     "EXCD": price_excd,
                     "SYMB": symbol,
-                    "GUBN": "0",  # 0=일, 1=주, 2=월
+                    "GUBN": {"D": "0", "W": "1", "M": "2"}[period],  # 0=일, 1=주, 2=월
                     "BYMD": bymd,
                     "MODP": "1",  # 수정주가 반영
                 },
@@ -278,13 +336,13 @@ class KisClient:
                 if bar.close > 0:
                     collected[day] = bar
                     added += 1
-            if len(collected) >= days or oldest is None or added == 0:
+            if len(collected) >= wanted or oldest is None or added == 0:
                 break
             next_bymd = (datetime.strptime(oldest, "%Y%m%d").date() - timedelta(days=1)).strftime("%Y%m%d")
             if next_bymd == bymd:
                 break
             bymd = next_bymd
-        return sorted(collected.values(), key=lambda item: item.date)[-days:]
+        return sorted(collected.values(), key=lambda item: item.date)[-wanted:]
 
     def balance(self, market: str = markets.KR) -> Dict[str, Any]:
         if self.settings.is_mock:

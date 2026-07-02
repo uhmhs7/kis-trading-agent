@@ -91,6 +91,24 @@ AUTO_TRADE_NOTE = (
     "(리스크 한도 통과 시). 체결 후 결과와 실현손익을 알려주세요."
 )
 
+# Forced-tool schema for the AI risk plan: one call, structured output, no free text.
+_RISK_PLAN_TOOL = {
+    "name": "submit_risk_plan",
+    "description": "산출한 리스크 플랜을 제출합니다.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "entry": {"type": "number", "description": "권장 지정가 진입가 (현재가 대비 ±5% 이내)"},
+            "stop_loss": {"type": "number", "description": "손절가 — 진입가 아래, 지지선/ATR 근거"},
+            "take_profit": {"type": "number", "description": "목표가 — 손익비 1.5 이상"},
+            "confidence": {"type": "integer", "description": "플랜 신뢰도 0~100"},
+            "rationale": {"type": "string", "description": "한국어 2~3문장 근거 (지표 인용)"},
+        },
+        "required": ["entry", "stop_loss", "take_profit", "confidence", "rationale"],
+        "additionalProperties": False,
+    },
+}
+
 
 def _tool_defs(auto_trade: bool = False) -> List[Dict[str, Any]]:
     tools = [
@@ -131,6 +149,23 @@ def _tool_defs(auto_trade: bool = False) -> List[Dict[str, Any]]:
                     "market": _MARKET_PROP,
                 },
                 "required": ["symbols"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "suggest_risk_plan",
+            "description": (
+                "AI 리스크 플랜: 특정 종목의 권장 진입가/손절가/목표가/수량을 근거·신뢰도와 함께 산출합니다. "
+                "사용자가 진입 시점, 손절 라인, '얼마에 사서 얼마에 팔까' 같은 리스크 플랜을 물을 때 호출하세요. "
+                "단순 분석/전망 질문에는 analyze_stock을 사용하세요."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "국내 6자리 코드 또는 미국 티커"},
+                    "market": _MARKET_PROP,
+                },
+                "required": ["symbol"],
                 "additionalProperties": False,
             },
         },
@@ -336,6 +371,9 @@ class LLMAgent:
                 symbols = [str(s) for s in (args.get("symbols") or [])]
                 data = self.agent.screen(symbols, market)
                 return _compact_screen(data), {"type": "screen", "data": data}
+            if name == "suggest_risk_plan":
+                plan = self.agent.ai_risk_plan(str(args["symbol"]), market)
+                return plan, None  # the model narrates the plan; no separate UI artifact
             if name == "get_balance":
                 data = self.agent.balance(market)
                 return {"balance": data.get("agent_portfolio", data)}, {"type": "balance", "data": data}
@@ -365,6 +403,49 @@ class LLMAgent:
         except Exception as exc:  # surface tool failures back to the model
             logger.warning("tool %s failed: %s", name, exc)
             return {"error": str(exc)}, None
+
+    def risk_plan(self, report: Dict[str, Any]) -> Dict[str, Any]:
+        """One forced-tool call: entry/stop/target/confidence/rationale from a report.
+
+        Values are validated and clamped by the caller (agent.ai_risk_plan) — the
+        model's numbers are never used raw."""
+        if not self.available:
+            raise LLMUnavailable("LLM이 구성되어 있지 않습니다 (ANTHROPIC_API_KEY 없음).")
+        client = self._get_client()
+        model = self.agent.llm_config()["model"]
+        bars = report.get("recent_bars") or []
+        context = {
+            "symbol": report["symbol"],
+            "name": report["name"],
+            "market": report.get("market"),
+            "currency": report.get("currency"),
+            "price": report["quote"]["price"],
+            "metrics": report["metrics"],
+            "signals": report["signals"],
+            "baseline_plan": report["risk_plan"],
+            "recent_bars": [
+                {"d": b["date"], "o": b["open"], "h": b["high"], "l": b["low"], "c": b["close"]}
+                for b in bars[-40:]
+            ],
+        }
+        prompt = (
+            "아래 종목 데이터를 근거로 스윙 트레이딩 기준의 리스크 플랜을 산출하세요.\n"
+            "규칙: 진입가는 현재가 대비 ±5% 이내의 현실적인 지정가(눌림목/지지선 고려), "
+            "손절가는 진입가 아래(최근 지지선·ATR 근거), 목표가는 손익비 1.5 이상. "
+            "baseline_plan(규칙 기반)과 다르게 판단했다면 그 이유를 rationale에 포함하세요.\n\n"
+            + json.dumps(context, ensure_ascii=False)
+        )
+        response = client.messages.create(
+            model=model,
+            max_tokens=800,
+            tools=[_RISK_PLAN_TOOL],
+            tool_choice={"type": "tool", "name": "submit_risk_plan"},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        for block in response.content:
+            if block.type == "tool_use" and block.name == "submit_risk_plan":
+                return dict(block.input or {})
+        raise ValueError("AI 플랜 응답을 해석하지 못했습니다.")
 
     def decide_trades(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """LLM-mode autopilot: pick trades from pre-computed candidates.

@@ -5,6 +5,7 @@ import logging
 from dataclasses import replace
 from pathlib import Path
 
+import os
 import secrets
 
 import requests
@@ -15,6 +16,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import auth
 from .agent import TradingAgent
+from .ratelimit import DailyCounter, SlidingWindowLimiter, client_ip
 from .autopilot import AutoPilot
 from .config import get_settings
 from .kis_client import KisAPIError, KisClient
@@ -119,14 +121,56 @@ if store.read_config().get("auto_pilot") and settings.is_mock:
 app = FastAPI(title="KIS Trading Agent", version="0.1.0")
 # Signed-cookie sessions (no server-side store — safe on ephemeral hosts). Set
 # SESSION_SECRET in prod so logins survive restarts; a random key logs users out
-# on each restart otherwise.
+# on each restart otherwise. The Secure flag turns on automatically when the
+# deployment is https (OAUTH_REDIRECT_URI) or COOKIE_SECURE is set.
+_secure_cookies = settings.oauth_redirect_uri.startswith("https") or (
+    os.getenv("COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes", "on"}
+)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.session_secret or secrets.token_urlsafe(32),
     same_site="lax",
-    https_only=False,
+    https_only=_secure_cookies,
 )
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    h = response.headers
+    h.setdefault("X-Content-Type-Options", "nosniff")
+    h.setdefault("X-Frame-Options", "DENY")
+    h.setdefault("Referrer-Policy", "no-referrer")
+    h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    h.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
+    )
+    return response
+
+
+# --- Rate limiting (public URL: protect the Anthropic bill and the KIS quota) ---
+_llm_window = SlidingWindowLimiter(int(os.getenv("LLM_RATE_LIMIT", "10")), 300)
+_market_window = SlidingWindowLimiter(int(os.getenv("MARKET_RATE_LIMIT", "60")), 300)
+_llm_daily = DailyCounter(int(os.getenv("LLM_DAILY_LIMIT", "300")))
+
+
+def limit_llm(request: Request) -> None:
+    if os.getenv("PYTEST_CURRENT_TEST"):  # the test client shares one IP bucket
+        return
+    if not _llm_window.allow(client_ip(request)):
+        raise HTTPException(status_code=429, detail="요청이 너무 잦습니다. 잠시 후 다시 시도해 주세요.")
+    if settings.has_llm and not _llm_daily.allow():
+        raise HTTPException(status_code=429, detail="오늘의 AI 사용 한도에 도달했습니다. 내일 다시 이용해 주세요.")
+
+
+def limit_market(request: Request) -> None:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return
+    if not _market_window.allow(client_ip(request)):
+        raise HTTPException(status_code=429, detail="요청이 너무 잦습니다. 잠시 후 다시 시도해 주세요.")
 
 
 def current_user(request: Request):
@@ -239,28 +283,40 @@ def status() -> dict:
     }
 
 
-@app.post("/api/analyze")
+@app.post("/api/analyze", dependencies=[Depends(limit_market)])
 def analyze(request: AnalyzeRequest) -> dict:
     return _safe_call("analyze", lambda: agent.analyze(request.symbol, request.market))
 
 
-@app.post("/api/screen")
+@app.post("/api/analyze/ai-plan", dependencies=[Depends(limit_llm)])
+def ai_plan(request: AnalyzeRequest) -> dict:
+    """LLM-judged entry/stop/target (advisory; values are server-clamped)."""
+    return _safe_call("ai_plan", lambda: agent.ai_risk_plan(request.symbol, request.market))
+
+
+@app.post("/api/screen", dependencies=[Depends(limit_market)])
 def screen(request: ScreenRequest) -> dict:
     return _safe_call("screen", lambda: agent.screen(request.symbols, request.market))
 
 
-@app.get("/api/prices")
-def prices(symbol: str, market: str = "KR", days: int = 400) -> dict:
-    """Daily bars for the chart, on demand (public — the chart is part of the demo)."""
-    return _safe_call("prices", lambda: agent.price_history(symbol, market, days))
+@app.get("/api/prices", dependencies=[Depends(limit_market)])
+def prices(symbol: str, market: str = "KR", days: int = 400, period: str = "D") -> dict:
+    """Chart bars on demand (public — the chart is part of the demo).
+
+    period: D=daily, W=weekly, M=monthly (long ranges use W/M to stay fast)."""
+    if (period or "D").upper() not in {"D", "W", "M"}:
+        raise HTTPException(status_code=400, detail="period는 D, W, M 중 하나여야 합니다.")
+    if len(symbol) > 12:
+        raise HTTPException(status_code=400, detail="잘못된 종목코드입니다.")
+    return _safe_call("prices", lambda: agent.price_history(symbol, market, days, period))
 
 
-@app.post("/api/chat")
+@app.post("/api/chat", dependencies=[Depends(limit_llm)])
 def chat(request: ChatRequest) -> dict:
     return _safe_call("chat", lambda: agent.chat_session(request.message, request.session_id))
 
 
-@app.post("/api/chat/stream")
+@app.post("/api/chat/stream", dependencies=[Depends(limit_llm)])
 def chat_stream(request: ChatRequest) -> StreamingResponse:
     def event_source():
         try:
@@ -401,7 +457,13 @@ def set_config(request: ConfigRequest, http_request: Request, x_dashboard_token:
 
 
 @app.get("/api/conversations")
-def conversations() -> dict:
+def conversations(request: Request, x_dashboard_token: str = Header(default="")) -> dict:
+    """The full list spans EVERY visitor's chats — privileged once a gate exists.
+
+    Individual conversations stay fetchable by their unguessable session id, so a
+    visitor's own refresh/restore keeps working."""
+    if settings.privileged_gate and not is_privileged(request, x_dashboard_token):
+        return {"conversations": []}
     return {"conversations": store.list_conversations()}
 
 

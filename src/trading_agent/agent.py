@@ -142,20 +142,94 @@ class TradingAgent:
         )
         return report
 
-    def price_history(self, symbol: str, market: Optional[str] = None, days: int = 400) -> Dict[str, Any]:
-        """Daily OHLCV bars for the chart. Longer windows are fetched on demand
-        (the report's default analyze stays light). Recently-listed names simply
-        return fewer bars — the client paginates until KIS/data runs out."""
+    def price_history(
+        self, symbol: str, market: Optional[str] = None, days: int = 400, period: str = "D"
+    ) -> Dict[str, Any]:
+        """OHLCV bars for the chart, fetched on demand (analyze stays light).
+
+        period: D=daily, W=weekly, M=monthly — long ranges use weekly/monthly candles
+        straight from KIS so 10Y/MAX stay fast even in paper mode. Recently-listed
+        names simply return fewer bars."""
         symbol, market = markets.normalize_symbol(symbol, market)
-        days = max(20, min(int(days), 8000))
-        bars = self.client.daily_prices(symbol, market, days=days)
+        period = (period or "D").upper()
+        if period not in {"D", "W", "M"}:
+            raise ValueError("period는 D, W, M 중 하나여야 합니다.")
+        days = max(20, min(int(days), 15000))
+        bars = self.client.daily_prices(symbol, market, days=days, period=period)
         return {
             "symbol": symbol,
             "market": market,
             "currency": markets.currency_of(market),
+            "period": period,
             "bars": bars_to_dicts(bars),
             "count": len(bars),
         }
+
+    def ai_risk_plan(self, symbol: str, market: Optional[str] = None) -> Dict[str, Any]:
+        """LLM-judged entry/stop/target with rationale, over the deterministic report.
+
+        The LLM output is advisory and NEVER trusted raw: entry is clamped near the
+        current price, stop is forced below entry, target above — and any order made
+        from it still passes the normal risk gates."""
+        symbol, market = markets.normalize_symbol(symbol, market)
+        if not self.llm.available:
+            raise ValueError("LLM이 구성되어 있지 않습니다 (ANTHROPIC_API_KEY 필요).")
+        report = self.analyze(symbol, market)
+        raw = self.llm.risk_plan(report)
+
+        mc = self.settings.market_config(market)
+        pdig = 2 if market == markets.US else 0
+        floor = 0.01 if market == markets.US else 1.0
+        current = float(report["quote"]["price"] or report["metrics"]["close"])
+        atr = float(report["metrics"].get("atr14") or max(floor, current * 0.025))
+
+        entry = _num(raw.get("entry"))
+        if not entry or entry <= 0:
+            entry = current
+        entry = min(max(entry, current * 0.90), current * 1.05)  # keep it near-market
+        stop = _num(raw.get("stop_loss"))
+        if not stop or stop >= entry:
+            stop = entry - atr * 1.2
+        stop = max(floor, stop)
+        target = _num(raw.get("take_profit"))
+        if not target or target <= entry:
+            target = entry + (entry - stop) * 2
+
+        risk_per_share = max(floor, entry - stop)
+        max_qty = int(mc.max_order // entry) if entry > 0 else 0
+        if max_qty <= 0:
+            qty = 0
+        else:
+            loss_based = int(mc.daily_loss_limit // risk_per_share) if risk_per_share > 0 else max_qty
+            qty = max(1, min(max_qty, loss_based))
+        try:
+            confidence = max(0, min(100, int(raw.get("confidence", 50))))
+        except (TypeError, ValueError):
+            confidence = 50
+
+        plan = {
+            "source": "llm",
+            "model": self.llm_config()["model"],
+            "symbol": symbol,
+            "name": report["name"],
+            "market": market,
+            "currency": mc.currency,
+            "price": _round(current, pdig),
+            "entry_reference": _round(entry, pdig),
+            "stop_loss": _round(stop, pdig),
+            "take_profit": _round(target, pdig),
+            "risk_per_share": _round(risk_per_share, pdig),
+            "suggested_quantity": qty,
+            "confidence": confidence,
+            "rationale": str(raw.get("rationale", ""))[:600],
+            "baseline": report["risk_plan"],
+            "disclaimer": "투자 판단 보조용이며 수익을 보장하지 않습니다.",
+        }
+        self.store.append_log(
+            "ai_plan",
+            {"symbol": symbol, "market": market, "entry": plan["entry_reference"], "confidence": confidence},
+        )
+        return plan
 
     def screen(self, symbols: Iterable[str], market: Optional[str] = None) -> Dict[str, Any]:
         results = []
