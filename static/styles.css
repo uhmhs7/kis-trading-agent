@@ -711,13 +711,19 @@ th {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .period-toggle {
   display: inline-flex;
+  flex-wrap: wrap;
   border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
+}
+
+.period-toggle button {
+  padding: 0 10px;
 }
 
 .period-toggle button {

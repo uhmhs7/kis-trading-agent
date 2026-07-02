@@ -142,6 +142,21 @@ class TradingAgent:
         )
         return report
 
+    def price_history(self, symbol: str, market: Optional[str] = None, days: int = 400) -> Dict[str, Any]:
+        """Daily OHLCV bars for the chart. Longer windows are fetched on demand
+        (the report's default analyze stays light). Recently-listed names simply
+        return fewer bars — the client paginates until KIS/data runs out."""
+        symbol, market = markets.normalize_symbol(symbol, market)
+        days = max(20, min(int(days), 8000))
+        bars = self.client.daily_prices(symbol, market, days=days)
+        return {
+            "symbol": symbol,
+            "market": market,
+            "currency": markets.currency_of(market),
+            "bars": bars_to_dicts(bars),
+            "count": len(bars),
+        }
+
     def screen(self, symbols: Iterable[str], market: Optional[str] = None) -> Dict[str, Any]:
         results = []
         errors = []

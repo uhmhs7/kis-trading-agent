@@ -249,6 +249,12 @@ def screen(request: ScreenRequest) -> dict:
     return _safe_call("screen", lambda: agent.screen(request.symbols, request.market))
 
 
+@app.get("/api/prices")
+def prices(symbol: str, market: str = "KR", days: int = 400) -> dict:
+    """Daily bars for the chart, on demand (public — the chart is part of the demo)."""
+    return _safe_call("prices", lambda: agent.price_history(symbol, market, days))
+
+
 @app.post("/api/chat")
 def chat(request: ChatRequest) -> dict:
     return _safe_call("chat", lambda: agent.chat_session(request.message, request.session_id))

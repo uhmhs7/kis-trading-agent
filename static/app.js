@@ -7,9 +7,17 @@ const state = {
   dashboardToken: sessionStorage.getItem("kis_dash_token") || "",
   chartPeriod: "3M",
   chartShowBB: false,
+  // Chart history cache: the fullest bar set loaded for the current symbol, and how
+  // many days we've already requested (so switching periods only fetches when needed).
+  chartBars: [],
+  chartReqDays: 0,
+  chartKey: "",
 };
 
-const PERIOD_BARS = { "1M": 22, "3M": 66, "6M": 130 };
+const PERIOD_BARS = { "1M": 22, "3M": 66, "6M": 130, "1Y": 252, "5Y": 1260, "10Y": 2520, "MAX": Infinity };
+// Calendar days of history to request from the backend per period (generous so
+// enough trading bars come back; the backend caps and paginates until data runs out).
+const PERIOD_DAYS = { "1M": 40, "3M": 110, "6M": 200, "1Y": 400, "5Y": 1950, "10Y": 3900, "MAX": 8000 };
 const COMPARE_COLORS = ["#1f6feb", "#16845b", "#c13b3a", "#9a6a00", "#7c4dff", "#0aa", "#e8890c", "#d6336c"];
 
 const $ = (selector) => document.querySelector(selector);
@@ -639,6 +647,10 @@ function renderReport(data) {
             <button type="button" data-period="1M">1M</button>
             <button type="button" data-period="3M">3M</button>
             <button type="button" data-period="6M">6M</button>
+            <button type="button" data-period="1Y">1Y</button>
+            <button type="button" data-period="5Y">5Y</button>
+            <button type="button" data-period="10Y">10Y</button>
+            <button type="button" data-period="MAX">최대</button>
           </div>
           <label class="bb-toggle"><input type="checkbox" id="bbToggle" /> 볼린저밴드</label>
         </div>
@@ -679,8 +691,33 @@ function renderReport(data) {
     </section>
   `;
   if (window.lucide) window.lucide.createIcons();
+  // Seed the chart cache from the analysis window (~6M). Longer periods fetch more.
+  const key = `${data.symbol}:${data.market}`;
+  if (state.chartKey !== key) state.chartPeriod = state.chartPeriod || "3M";
+  state.chartBars = Array.isArray(data.recent_bars) ? data.recent_bars : [];
+  state.chartReqDays = PERIOD_DAYS["6M"];
+  state.chartKey = key;
   setupChartControls();
   drawReportChart();
+}
+
+// Downsample to keep long ranges (5Y/10Y/MAX) fast: aggregate into OHLCV buckets.
+function aggregateBars(bars, maxOut) {
+  if (!Array.isArray(bars) || bars.length <= maxOut) return bars;
+  const k = Math.ceil(bars.length / maxOut);
+  const out = [];
+  for (let i = 0; i < bars.length; i += k) {
+    const chunk = bars.slice(i, i + k);
+    out.push({
+      date: chunk[chunk.length - 1].date,
+      open: chunk[0].open,
+      close: chunk[chunk.length - 1].close,
+      high: Math.max(...chunk.map((b) => b.high)),
+      low: Math.min(...chunk.map((b) => b.low)),
+      volume: chunk.reduce((s, b) => s + b.volume, 0),
+    });
+  }
+  return out;
 }
 
 // ---- Indicator math (client-side) -----------------------------------------
@@ -841,25 +878,53 @@ function mountPriceChart(container, bars, currency, opts) {
 function drawReportChart() {
   const data = state.currentAnalysis;
   const area = $("#chartArea");
-  if (!data || !data.recent_bars || !area) return;
-  const all = data.recent_bars;
+  if (!data || !area) return;
+  const all = state.chartBars && state.chartBars.length ? state.chartBars : data.recent_bars || [];
+  if (!all.length) return;
   const cur = data.currency || "KRW";
   const count = PERIOD_BARS[state.chartPeriod] || all.length;
-  const bars = all.slice(-Math.min(count, all.length));
+  const sliced = all.slice(-Math.min(count, all.length));
+  const bars = aggregateBars(sliced, 600); // cap drawn candles for performance
   mountPriceChart(area, bars, cur, { showBB: state.chartShowBB });
   const rsiEl = $("#rsiArea");
   if (rsiEl) rsiEl.innerHTML = buildRSISVG(bars);
+  setActivePeriodButton(state.chartPeriod);
+}
+
+function setActivePeriodButton(period) {
   document.querySelectorAll("#reportContent .period-toggle button").forEach((b) =>
-    b.classList.toggle("active", b.dataset.period === state.chartPeriod),
+    b.classList.toggle("active", b.dataset.period === period),
   );
+}
+
+// Switch chart period; fetch deeper history on demand (only when we don't already
+// have enough). Recently-listed names just return fewer bars — no refetch loop.
+async function selectPeriod(period) {
+  state.chartPeriod = period;
+  setActivePeriodButton(period);
+  const data = state.currentAnalysis;
+  const needDays = PERIOD_DAYS[period] || PERIOD_DAYS["6M"];
+  if (data && needDays > state.chartReqDays) {
+    const area = $("#chartArea");
+    if (area) area.innerHTML = `<p class="neutral" style="padding:24px">📈 히스토리 불러오는 중…</p>`;
+    try {
+      const res = await api(
+        `/api/prices?symbol=${encodeURIComponent(data.symbol)}&market=${encodeURIComponent(data.market)}&days=${needDays}`,
+      );
+      if (res && Array.isArray(res.bars) && res.bars.length) {
+        state.chartBars = res.bars;
+        state.chartReqDays = needDays; // mark coverage so we don't refetch shorter ranges
+      }
+    } catch (error) {
+      // Keep whatever bars we already have; just redraw.
+    }
+  }
+  drawReportChart();
 }
 
 function setupChartControls() {
   document.querySelectorAll("#reportContent .period-toggle button").forEach((b) =>
-    b.addEventListener("click", () => {
-      state.chartPeriod = b.dataset.period;
-      drawReportChart();
-    }),
+    b.addEventListener("click", () => selectPeriod(b.dataset.period)),
   );
   const bb = $("#bbToggle");
   if (bb) {
