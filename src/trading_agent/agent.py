@@ -48,9 +48,9 @@ class TradingAgent:
         """Auto-trading toggles (runtime, store-backed)."""
         cfg = self.store.read_config()
         # LLM autopilot makes autonomous paid API calls, so it's effective only when
-        # a dashboard token is configured (footgun guard: removing the token reverts
-        # the scheduler to free rule-based mode).
-        llm_mode = bool(cfg.get("auto_pilot_llm", False)) and bool(self.settings.dashboard_token)
+        # a privileged gate is configured (Google login OR dashboard token). Footgun
+        # guard: removing the gate reverts the scheduler to free rule-based mode.
+        llm_mode = bool(cfg.get("auto_pilot_llm", False)) and self.settings.privileged_gate
         return {
             "auto_trade": bool(cfg.get("auto_trade", False)),
             "auto_pilot": bool(cfg.get("auto_pilot", False)),
@@ -576,8 +576,19 @@ class TradingAgent:
         mc = self.settings.market_config(market)
         pdig = 2 if market == markets.US else 0
         floor = 0.01 if market == markets.US else 1
-        entry = float(quote.price or metrics["close"])
-        atr14 = metrics.get("atr14") or max(floor, entry * 0.025)
+        current = float(quote.price or metrics["close"])
+        atr14 = metrics.get("atr14") or max(floor, current * 0.025)
+        # Suggested LIMIT entry = a pullback, never chasing above the current price:
+        #  - uptrend (price above the 20-day line) → wait toward the 20-day line, but
+        #    no deeper than a half-ATR dip (whichever is closer to price);
+        #  - otherwise → a modest half-ATR dip.
+        sma20 = metrics.get("sma20") or 0
+        half_atr_dip = current - atr14 * 0.5
+        if sma20 and sma20 < current:
+            entry = max(sma20, half_atr_dip)
+        else:
+            entry = half_atr_dip
+        entry = min(current, max(floor, entry))  # never above current
         stop = max(floor, min(entry * 0.97, entry - atr14 * 1.2))
         risk_per_share = max(floor, entry - stop)
         target = entry + risk_per_share * 2

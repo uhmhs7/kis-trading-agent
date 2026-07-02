@@ -631,7 +631,7 @@ function renderReport(data) {
       <article class="risk-panel">
         <div class="panel-head"><h2>리스크 플랜</h2><span class="mini-state">${data.score}점</span></div>
         <div class="risk-grid">
-          ${riskItem("진입", money(plan.entry_reference, cur))}
+          ${riskItem("권장진입", money(plan.entry_reference, cur))}
           ${riskItem("손절", money(plan.stop_loss, cur))}
           ${riskItem("목표", money(plan.take_profit, cur))}
           ${riskItem("권장수량", `${fmt.format(plan.suggested_quantity)}주`)}
@@ -1040,7 +1040,8 @@ function renderOrderExecution(data) {
 
 function hydrateOrderTicket(data) {
   $("#orderSymbol").value = data.symbol;
-  $("#orderPrice").value = data.quote.price;
+  // Prefill the limit price with the suggested (pullback) entry, not the current price.
+  $("#orderPrice").value = (data.risk_plan && data.risk_plan.entry_reference) || data.quote.price;
   const plan = data.risk_plan;
   // Prefer the risk-based conservative size; fall back to the order-limit cap.
   $("#orderQty").value = Math.max(

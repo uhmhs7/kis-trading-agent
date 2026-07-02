@@ -153,12 +153,20 @@ class KisClient:
             params={"AUTH": "", "EXCD": price_excd, "SYMB": symbol},
         )
         output = payload.get("output") or {}
+        # KIS overseas 'diff' is often unsigned; the signed 'rate' (%) carries the
+        # direction — align the change sign to it so up/down never contradict.
+        change = _to_float(output.get("diff"))
+        rate = _to_float(output.get("rate"))
+        if rate < 0:
+            change = -abs(change)
+        elif rate > 0:
+            change = abs(change)
         return Quote(
             symbol=symbol,
             name=markets.name_for(symbol, markets.US, default=symbol),
             price=_to_float(output.get("last")),
-            change=_to_float(output.get("diff")),
-            change_pct=_to_float(output.get("rate")),
+            change=change,
+            change_pct=rate,
             open=_to_float(output.get("open")),
             high=_to_float(output.get("high")),
             low=_to_float(output.get("low")),
