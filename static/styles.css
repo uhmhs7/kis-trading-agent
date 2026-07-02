@@ -115,74 +115,96 @@ h2 {
 
 .workspace {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(280px, 330px) minmax(0, 1fr);
   gap: 18px;
   align-items: start;
 }
 
 .left-rail {
-  position: relative;
   align-self: start;
 }
 
-.rail-icons {
+/* iOS-style settings list: 5 short rows → no scrolling. */
+.rail-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  width: 76px;
+  gap: 10px;
 }
 
-.rail-icon {
+.rail-row {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 5px;
-  padding: 12px 4px;
+  gap: 14px;
+  width: 100%;
+  padding: 16px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--surface);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
-}
-
-.rail-icon svg {
-  width: 20px;
-  height: 20px;
-}
-
-.rail-icon:hover {
-  border-color: var(--blue);
   color: var(--text);
+  font-size: 15px;
+  font-weight: 800;
+  text-align: left;
+  box-shadow: 0 4px 18px rgba(32, 37, 45, 0.04);
+  transition: border-color 0.12s, transform 0.06s;
 }
 
-.rail-icon.active {
-  background: var(--blue);
+.rail-row:hover {
   border-color: var(--blue);
-  color: #fff;
 }
 
-.rail-flyout {
-  position: absolute;
-  top: 0;
-  left: 88px;
-  width: 330px;
-  max-height: calc(100vh - 140px);
-  overflow-y: auto;
+.rail-row:active {
+  transform: scale(0.99);
+}
+
+.rail-row-icon {
+  width: 22px;
+  height: 22px;
+  color: var(--blue);
+}
+
+.rail-row-label {
+  flex: 1;
+}
+
+.rail-row-chevron {
+  width: 18px;
+  height: 18px;
+  color: var(--muted);
+}
+
+/* Detail view: only the selected section, plus a back button. */
+.rail-detail {
   display: none;
   flex-direction: column;
   gap: 14px;
-  padding: 2px;
-  z-index: 40;
 }
 
-.rail-flyout.open {
+.rail-detail.open {
   display: flex;
 }
 
-.rail-flyout .panel {
-  box-shadow: var(--shadow);
+.rail-list.hidden {
+  display: none;
+}
+
+.rail-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 800;
+}
+
+.rail-back svg {
+  width: 18px;
+  height: 18px;
+}
+
+.rail-detail .panel {
   margin: 0;
 }
 
@@ -709,9 +731,9 @@ th {
 }
 
 .chat-thread {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-  align-content: start;
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -734,14 +756,14 @@ th {
 }
 
 .bubble.user {
-  justify-self: end;
+  align-self: flex-end;
   background: var(--blue);
   color: #fff;
   border-bottom-right-radius: 4px;
 }
 
 .bubble.assistant {
-  justify-self: start;
+  align-self: flex-start;
   background: var(--surface-2);
   color: var(--text);
   border-bottom-left-radius: 4px;
@@ -788,20 +810,6 @@ th {
   .workspace,
   .hero-report {
     grid-template-columns: 1fr;
-  }
-
-  .rail-icons {
-    flex-direction: row;
-    flex-wrap: wrap;
-    width: auto;
-  }
-
-  .rail-flyout {
-    position: static;
-    left: auto;
-    width: auto;
-    max-height: none;
-    margin-top: 12px;
   }
 
   .main-stage {

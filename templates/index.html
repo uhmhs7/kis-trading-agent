@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>KIS Trading Agent</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=3" />
   </head>
   <body>
     <header class="topbar">
@@ -22,25 +22,38 @@
     <main class="shell">
       <section class="workspace">
         <aside class="left-rail">
-          <nav class="rail-icons" aria-label="설정 및 도구">
-            <button type="button" class="rail-icon" data-panel="settingsPanel" title="설정" aria-label="설정">
-              <i data-lucide="settings"></i><span>설정</span>
+          <nav class="rail-list" id="railList" aria-label="설정 및 도구">
+            <button type="button" class="rail-row" data-panel="settingsPanel">
+              <i data-lucide="settings" class="rail-row-icon"></i>
+              <span class="rail-row-label">설정</span>
+              <i data-lucide="chevron-right" class="rail-row-chevron"></i>
             </button>
-            <button type="button" class="rail-icon" data-panel="analyzeForm" title="종목 분석" aria-label="종목 분석">
-              <i data-lucide="activity"></i><span>분석</span>
+            <button type="button" class="rail-row" data-panel="analyzeForm">
+              <i data-lucide="activity" class="rail-row-icon"></i>
+              <span class="rail-row-label">종목 분석</span>
+              <i data-lucide="chevron-right" class="rail-row-chevron"></i>
             </button>
-            <button type="button" class="rail-icon" data-panel="screenForm" title="관심종목" aria-label="관심종목">
-              <i data-lucide="radar"></i><span>관심</span>
+            <button type="button" class="rail-row" data-panel="screenForm">
+              <i data-lucide="radar" class="rail-row-icon"></i>
+              <span class="rail-row-label">관심종목</span>
+              <i data-lucide="chevron-right" class="rail-row-chevron"></i>
             </button>
-            <button type="button" class="rail-icon" data-panel="orderForm" title="주문 티켓" aria-label="주문 티켓">
-              <i data-lucide="shopping-cart"></i><span>주문</span>
+            <button type="button" class="rail-row" data-panel="orderForm">
+              <i data-lucide="shopping-cart" class="rail-row-icon"></i>
+              <span class="rail-row-label">주문 티켓</span>
+              <i data-lucide="chevron-right" class="rail-row-chevron"></i>
             </button>
-            <button type="button" class="rail-icon" data-panel="agentHint" title="Agent 사용법" aria-label="Agent 사용법">
-              <i data-lucide="message-square"></i><span>도움</span>
+            <button type="button" class="rail-row" data-panel="agentHint">
+              <i data-lucide="message-square" class="rail-row-icon"></i>
+              <span class="rail-row-label">Agent 사용법</span>
+              <i data-lucide="chevron-right" class="rail-row-chevron"></i>
             </button>
           </nav>
 
-          <div class="rail-flyout" id="railFlyout">
+          <div class="rail-detail" id="railDetail">
+            <button type="button" class="rail-back" id="railBack">
+              <i data-lucide="arrow-left"></i> 뒤로
+            </button>
             <div id="settingsPanel" class="panel rail-panel">
             <div class="panel-head">
               <h2>설정</h2>
@@ -267,7 +280,7 @@
     <!-- Vendored locally so the public demo never depends on an external CDN. -->
     <script src="/static/lucide.min.js"></script>
     <script src="/static/app.js"></script>
-    <!-- Left icon-rail flyout: independent of app.js (no shared IDs touched). -->
+    <!-- Left settings: iOS-style list ↔ detail navigation (no shared app.js IDs touched). -->
     <script>
       (function () {
         function ready(fn) {
@@ -275,45 +288,36 @@
           else document.addEventListener("DOMContentLoaded", fn);
         }
         ready(function () {
-          var flyout = document.getElementById("railFlyout");
-          var icons = Array.prototype.slice.call(document.querySelectorAll(".rail-icon"));
-          if (!flyout || !icons.length) return;
+          var list = document.getElementById("railList");
+          var detail = document.getElementById("railDetail");
+          var back = document.getElementById("railBack");
+          var rows = Array.prototype.slice.call(document.querySelectorAll(".rail-row"));
+          if (!list || !detail || rows.length === 0) return;
 
-          function close() {
-            flyout.classList.remove("open");
-            icons.forEach(function (b) { b.classList.remove("active"); });
+          function showList() {
+            detail.classList.remove("open");
+            list.classList.remove("hidden");
+            document.querySelectorAll(".rail-panel").forEach(function (p) {
+              p.classList.remove("active");
+            });
           }
-          function open(id) {
+          function showDetail(id) {
             document.querySelectorAll(".rail-panel").forEach(function (p) {
               p.classList.toggle("active", p.id === id);
             });
-            icons.forEach(function (b) { b.classList.toggle("active", b.dataset.panel === id); });
-            flyout.classList.add("open");
+            list.classList.add("hidden");
+            detail.classList.add("open");
           }
 
-          icons.forEach(function (btn) {
-            btn.addEventListener("click", function () {
-              var id = btn.dataset.panel;
-              if (flyout.classList.contains("open") && btn.classList.contains("active")) close();
-              else open(id);
-            });
+          rows.forEach(function (row) {
+            row.addEventListener("click", function () { showDetail(row.dataset.panel); });
           });
-
-          // Click outside the flyout (and not on a rail icon) closes it.
-          document.addEventListener("click", function (e) {
-            if (!flyout.classList.contains("open")) return;
-            if (flyout.contains(e.target) || e.target.closest(".rail-icon")) return;
-            close();
-          });
+          if (back) back.addEventListener("click", showList);
           document.addEventListener("keydown", function (e) {
-            if (e.key === "Escape") close();
+            if (e.key === "Escape") showList();
           });
 
-          // After running a tool, close the flyout so the result view isn't covered.
-          ["analyzeForm", "screenForm", "orderForm"].forEach(function (id) {
-            var f = document.getElementById(id);
-            if (f) f.addEventListener("submit", function () { setTimeout(close, 60); });
-          });
+          showList(); // start on the list — nothing expanded, so no scrolling
         });
       })();
     </script>
