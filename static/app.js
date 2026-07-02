@@ -45,22 +45,38 @@ async function loadMe() {
     if (box) box.classList.add("hidden");
     return;
   }
-  // OAuth on: hide the token field, show login/logout.
+  // OAuth on: login is the ONLY unlock. Drop any stale legacy token so the browser
+  // stops sending X-Dashboard-Token (otherwise old sessions stay privileged).
+  state.dashboardToken = "";
+  sessionStorage.removeItem("kis_dash_token");
+
+  // Hide the token field, show login/logout.
   if (tokenLabel) tokenLabel.classList.add("hidden");
   if (tokenInput) tokenInput.classList.add("hidden");
   if (authLabel) authLabel.classList.remove("hidden");
-  if (!box) return;
-  box.classList.remove("hidden");
-  if (me.email) {
-    box.innerHTML =
-      `<div class="auth-user"><span>✅ 로그인됨</span><b>${me.email}</b>` +
-      `<a class="auth-link" href="/auth/logout">로그아웃</a></div>`;
-  } else {
-    box.innerHTML =
-      `<a class="auth-btn" href="/auth/login"><i data-lucide="log-in"></i> Google로 로그인</a>` +
-      `<p class="neutral" style="margin-top:8px;font-size:12px">주문·잔고·환경전환은 로그인 후 사용할 수 있습니다.</p>`;
+  if (box) {
+    box.classList.remove("hidden");
+    if (me.email) {
+      box.innerHTML =
+        `<div class="auth-user"><span>✅ 로그인됨</span><b>${me.email}</b>` +
+        `<a class="auth-link" href="/auth/logout">로그아웃</a></div>`;
+    } else {
+      box.innerHTML =
+        `<a class="auth-btn" href="/auth/login"><i data-lucide="log-in"></i> Google로 로그인</a>` +
+        `<p class="neutral" style="margin-top:8px;font-size:12px">주문·잔고·환경전환은 로그인 후 사용할 수 있습니다.</p>`;
+    }
   }
+  // Lock the privileged toggles until an allowlisted user is logged in.
+  setPrivilegedControls(me.authorized);
   if (window.lucide) window.lucide.createIcons();
+}
+
+// Enable/disable privileged controls based on whether the request is authorized.
+function setPrivilegedControls(authorized) {
+  ["#liveOrders", "#autoTrade", "#autoPilot", "#autoPilotLlm", "#envSelect"].forEach((sel) => {
+    const el = $(sel);
+    if (el) el.disabled = !authorized;
+  });
 }
 
 function seedChatThread() {
