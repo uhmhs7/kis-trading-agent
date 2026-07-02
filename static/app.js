@@ -21,9 +21,47 @@ document.addEventListener("DOMContentLoaded", async () => {
   await restoreConversation();
   await loadStatus();
   await loadConfig();
+  await loadMe();
   await loadLogs();
   if (window.lucide) window.lucide.createIcons();
 });
+
+// Google login state. When OAuth is enabled, the token field is replaced by a
+// "Sign in with Google" button (or the logged-in email + logout).
+async function loadMe() {
+  const box = $("#authBox");
+  const authLabel = $("#authLabel");
+  const tokenLabel = $("#dashTokenLabel");
+  const tokenInput = $("#dashTokenInput");
+  let me;
+  try {
+    me = await api("/api/me");
+  } catch (error) {
+    return;
+  }
+  if (!me.oauth_enabled) {
+    // No Google OAuth configured — keep the legacy token field, hide the account row.
+    if (authLabel) authLabel.classList.add("hidden");
+    if (box) box.classList.add("hidden");
+    return;
+  }
+  // OAuth on: hide the token field, show login/logout.
+  if (tokenLabel) tokenLabel.classList.add("hidden");
+  if (tokenInput) tokenInput.classList.add("hidden");
+  if (authLabel) authLabel.classList.remove("hidden");
+  if (!box) return;
+  box.classList.remove("hidden");
+  if (me.email) {
+    box.innerHTML =
+      `<div class="auth-user"><span>✅ 로그인됨</span><b>${me.email}</b>` +
+      `<a class="auth-link" href="/auth/logout">로그아웃</a></div>`;
+  } else {
+    box.innerHTML =
+      `<a class="auth-btn" href="/auth/login"><i data-lucide="log-in"></i> Google로 로그인</a>` +
+      `<p class="neutral" style="margin-top:8px;font-size:12px">주문·잔고·환경전환은 로그인 후 사용할 수 있습니다.</p>`;
+  }
+  if (window.lucide) window.lucide.createIcons();
+}
 
 function seedChatThread() {
   $("#chatThread").innerHTML =

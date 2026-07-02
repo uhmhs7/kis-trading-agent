@@ -5,11 +5,15 @@ import logging
 from dataclasses import replace
 from pathlib import Path
 
-import requests
-from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+import secrets
 
+import requests
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
+
+from . import auth
 from .agent import TradingAgent
 from .autopilot import AutoPilot
 from .config import get_settings
@@ -51,7 +55,7 @@ def _env_available(env: str) -> bool:
     if env == "mock":
         return True
     cand = _candidate_settings(env)
-    return cand.has_api_credentials and cand.has_account and settings.requires_dashboard_token
+    return cand.has_api_credentials and cand.has_account and settings.privileged_gate
 
 
 def _apply_settings(**overrides) -> None:
@@ -113,17 +117,95 @@ if store.read_config().get("auto_pilot") and settings.is_mock:
     autopilot.start()
 
 app = FastAPI(title="KIS Trading Agent", version="0.1.0")
+# Signed-cookie sessions (no server-side store — safe on ephemeral hosts). Set
+# SESSION_SECRET in prod so logins survive restarts; a random key logs users out
+# on each restart otherwise.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.session_secret or secrets.token_urlsafe(32),
+    same_site="lax",
+    https_only=False,
+)
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 
 
-def require_dashboard_token(x_dashboard_token: str = Header(default="")) -> None:
-    """Gate order/balance routes when DASHBOARD_TOKEN is configured.
+def current_user(request: Request):
+    return request.session.get("user_email")
 
-    No-op for the open mock demo (empty token); set DASHBOARD_TOKEN to require the
-    matching X-Dashboard-Token header on the order and balance endpoints.
+
+def _redirect_uri(request: Request) -> str:
+    if settings.oauth_redirect_uri:
+        return settings.oauth_redirect_uri
+    return str(request.base_url).rstrip("/") + "/auth/callback"
+
+
+def is_privileged(request: Request, x_dashboard_token: str = "") -> bool:
+    """Privileged = logged-in allowlisted Google user, OR the legacy dashboard token."""
+    email = current_user(request)
+    if email and auth.email_allowed(settings, email):
+        return True
+    if settings.dashboard_token and x_dashboard_token == settings.dashboard_token:
+        return True
+    return False
+
+
+def require_dashboard_token(request: Request, x_dashboard_token: str = Header(default="")) -> None:
+    """Gate order/balance routes when a privileged gate (Google login or token) is set.
+
+    No-op for the open mock demo (nothing configured).
     """
-    if settings.requires_dashboard_token and x_dashboard_token != settings.dashboard_token:
-        raise HTTPException(status_code=401, detail="유효한 대시보드 토큰이 필요합니다.")
+    if settings.privileged_gate and not is_privileged(request, x_dashboard_token):
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+
+
+@app.get("/auth/login")
+def auth_login(request: Request):
+    if not settings.has_google_oauth:
+        raise HTTPException(status_code=400, detail="Google 로그인이 구성되어 있지 않습니다.")
+    state = auth.new_state()
+    request.session["oauth_state"] = state
+    return RedirectResponse(auth.build_auth_url(settings, _redirect_uri(request), state))
+
+
+@app.get("/auth/callback")
+def auth_callback(request: Request, code: str = "", state: str = ""):
+    if not settings.has_google_oauth:
+        raise HTTPException(status_code=400, detail="Google 로그인이 구성되어 있지 않습니다.")
+    if not code or not state or state != request.session.get("oauth_state"):
+        raise HTTPException(status_code=400, detail="잘못된 로그인 요청입니다.")
+    info = auth.exchange_code(settings, code, _redirect_uri(request))
+    email = (info or {}).get("email")
+    if not email:
+        raise HTTPException(status_code=400, detail="구글 인증에 실패했습니다.")
+    request.session.pop("oauth_state", None)
+    if not auth.email_allowed(settings, email):
+        request.session.clear()
+        return HTMLResponse(
+            "<div style='font-family:sans-serif;padding:48px;text-align:center'>"
+            "<h2>접근 권한이 없는 계정입니다</h2>"
+            f"<p style='color:#657182'>{email}</p>"
+            "<p><a href='/'>← 돌아가기</a></p></div>",
+            status_code=403,
+        )
+    request.session["user_email"] = email
+    return RedirectResponse("/")
+
+
+@app.get("/auth/logout")
+def auth_logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/")
+
+
+@app.get("/api/me")
+def api_me(request: Request) -> dict:
+    email = current_user(request)
+    return {
+        "email": email,
+        "authorized": is_privileged(request),
+        "oauth_enabled": settings.has_google_oauth,
+        "auth_required": settings.privileged_gate,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -146,7 +228,7 @@ def status() -> dict:
         "llm_ready": settings.has_llm,
         "llm_model": cfg["model"] if settings.has_llm else None,
         "llm_thinking": cfg["thinking"] and cfg["model"] in THINKING_MODELS,
-        "auth_required": settings.requires_dashboard_token,
+        "auth_required": settings.privileged_gate,
         "live_orders_enabled": settings.allow_live_orders,
         "max_order_krw": settings.max_order_krw,
         "max_order_usd": settings.max_order_usd,
@@ -199,7 +281,7 @@ def _config_payload() -> dict:
         "thinking_supported": cfg["model"] in THINKING_MODELS,
         "available_models": AVAILABLE_MODELS,
         "llm_ready": settings.has_llm,
-        "auth_required": settings.requires_dashboard_token,
+        "auth_required": settings.privileged_gate,
         "environment": settings.kis_env,
         "environments": ENVIRONMENTS,
         "available_environments": [e for e in ENVIRONMENTS if _env_available(e)],
@@ -218,8 +300,8 @@ def get_config() -> dict:
 
 
 @app.post("/api/config")
-def set_config(request: ConfigRequest, x_dashboard_token: str = Header(default="")) -> dict:
-    token_ok = settings.requires_dashboard_token and x_dashboard_token == settings.dashboard_token
+def set_config(request: ConfigRequest, http_request: Request, x_dashboard_token: str = Header(default="")) -> dict:
+    token_ok = is_privileged(http_request, x_dashboard_token)
 
     # --- Soft settings: no token, no stack rebuild ---
     soft = {}
@@ -233,7 +315,7 @@ def set_config(request: ConfigRequest, x_dashboard_token: str = Header(default="
         soft["dry_run_default"] = bool(request.dry_run_default)
     if request.auto_trade is not None:
         if not settings.is_mock:  # touching a real account → operator token required
-            if not settings.requires_dashboard_token:
+            if not settings.privileged_gate:
                 raise HTTPException(status_code=403, detail="실계좌 환경의 자동 체결은 DASHBOARD_TOKEN 설정 시에만 허용됩니다.")
             if not token_ok:
                 raise HTTPException(status_code=401, detail="자동 체결 변경에는 유효한 대시보드 토큰이 필요합니다.")
@@ -242,7 +324,7 @@ def set_config(request: ConfigRequest, x_dashboard_token: str = Header(default="
         soft["auto_pilot_interval"] = int(request.auto_pilot_interval)
     # LLM autopilot makes autonomous paid calls → always requires the token.
     if request.auto_pilot_llm is not None:
-        if not settings.requires_dashboard_token:
+        if not settings.privileged_gate:
             raise HTTPException(status_code=403, detail="LLM 자율매매는 DASHBOARD_TOKEN 설정 시에만 허용됩니다.")
         if not token_ok:
             raise HTTPException(status_code=401, detail="LLM 자율매매 변경에는 유효한 대시보드 토큰이 필요합니다.")
@@ -255,7 +337,7 @@ def set_config(request: ConfigRequest, x_dashboard_token: str = Header(default="
     # drives autonomous real-account activity, so it needs the operator token.
     if request.auto_pilot is not None:
         if request.auto_pilot and not settings.is_mock:
-            if not settings.requires_dashboard_token:
+            if not settings.privileged_gate:
                 raise HTTPException(status_code=403, detail="실계좌 환경의 자율 매매는 DASHBOARD_TOKEN 설정 시에만 허용됩니다.")
             if not token_ok:
                 raise HTTPException(status_code=401, detail="자율 매매 변경에는 유효한 대시보드 토큰이 필요합니다.")
@@ -273,13 +355,13 @@ def set_config(request: ConfigRequest, x_dashboard_token: str = Header(default="
         stack["max_order_usd"] = float(request.max_order_usd)
     # Per-order limits: require the token only when one is configured (harmless cap;
     # open in the mock demo so the limit can be tuned).
-    if stack and settings.requires_dashboard_token and not token_ok:
+    if stack and settings.privileged_gate and not token_ok:
         raise HTTPException(status_code=401, detail="설정 변경에는 유효한 대시보드 토큰이 필요합니다.")
 
     # Live-order lock: the final real-money backstop — ALWAYS requires a token
     # (never unlockable in the open demo).
     if request.allow_live_orders is not None:
-        if not settings.requires_dashboard_token:
+        if not settings.privileged_gate:
             raise HTTPException(status_code=403, detail="실주문 잠금 해제는 DASHBOARD_TOKEN 설정 시에만 허용됩니다.")
         if not token_ok:
             raise HTTPException(status_code=401, detail="실주문 잠금 변경에는 유효한 대시보드 토큰이 필요합니다.")
@@ -289,8 +371,8 @@ def set_config(request: ConfigRequest, x_dashboard_token: str = Header(default="
     # non-mock switch (or any switch once a token is configured) needs the token.
     if request.environment is not None and request.environment != settings.kis_env:
         env = request.environment
-        if env != "mock" or settings.requires_dashboard_token:
-            if not settings.requires_dashboard_token:
+        if env != "mock" or settings.privileged_gate:
+            if not settings.privileged_gate:
                 raise HTTPException(status_code=403, detail="환경 전환은 DASHBOARD_TOKEN 설정 시에만 허용됩니다.")
             if not token_ok:
                 raise HTTPException(status_code=401, detail="환경 전환에는 유효한 대시보드 토큰이 필요합니다.")

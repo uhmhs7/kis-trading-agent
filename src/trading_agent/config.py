@@ -42,6 +42,12 @@ def _csv(name: str, default: str = "") -> Tuple[str, ...]:
     return tuple(item.strip().upper() for item in raw.split(",") if item.strip())
 
 
+def _emails(name: str) -> Tuple[str, ...]:
+    """Comma-separated list preserving case (emails are compared case-insensitively)."""
+    raw = os.getenv(name, "")
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
 _DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 _DEFAULT_WATCHLIST = ("005930", "000660", "035420", "051910", "005380")
 
@@ -86,6 +92,14 @@ class Settings:
     # Optional shared secret. When set, /api/orders/* and /api/balance require the
     # matching X-Dashboard-Token header. Leave empty for the open mock demo.
     dashboard_token: str = ""
+    # Google OAuth login (optional). When client id/secret are set, the dashboard
+    # shows "Sign in with Google" and a logged-in allowlisted user is privileged
+    # (replaces the dashboard token as the primary unlock mechanism).
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    oauth_redirect_uri: str = ""
+    session_secret: str = ""
+    allowed_emails: Tuple[str, ...] = ()
     # LLM agent settings. Without an API key the chat endpoint falls back to the
     # deterministic keyword router so the mock demo still works offline.
     anthropic_api_key: str = ""
@@ -120,6 +134,11 @@ class Settings:
             base_equity_usd=_float("KIS_BASE_EQUITY_USD", 1_000.0),
             allowed_symbols=_csv("KIS_ALLOWED_SYMBOLS"),
             dashboard_token=os.getenv("DASHBOARD_TOKEN", ""),
+            google_client_id=os.getenv("GOOGLE_CLIENT_ID", ""),
+            google_client_secret=os.getenv("GOOGLE_CLIENT_SECRET", ""),
+            oauth_redirect_uri=os.getenv("OAUTH_REDIRECT_URI", ""),
+            session_secret=os.getenv("SESSION_SECRET", ""),
+            allowed_emails=_emails("ALLOWED_EMAILS"),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
             anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8"),
             anthropic_thinking=_bool("ANTHROPIC_THINKING", False),
@@ -206,6 +225,15 @@ class Settings:
     @property
     def requires_dashboard_token(self) -> bool:
         return bool(self.dashboard_token)
+
+    @property
+    def has_google_oauth(self) -> bool:
+        return bool(self.google_client_id and self.google_client_secret)
+
+    @property
+    def privileged_gate(self) -> bool:
+        """True when any privileged-action gate is configured (token or Google login)."""
+        return self.requires_dashboard_token or self.has_google_oauth
 
     def validate_runtime(self) -> None:
         if self.kis_env not in {"mock", "paper", "prod"}:

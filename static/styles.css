@@ -612,6 +612,48 @@ th {
   gap: 8px;
 }
 
+.auth-box {
+  margin-bottom: 6px;
+}
+
+.auth-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 16px;
+  border-radius: 8px;
+  background: var(--blue);
+  color: #fff;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.auth-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.auth-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  flex-wrap: wrap;
+}
+
+.auth-user b {
+  overflow-wrap: anywhere;
+}
+
+.auth-link {
+  color: var(--blue);
+  font-weight: 800;
+  text-decoration: none;
+  margin-left: auto;
+}
+
 .settings-hint {
   margin-top: 8px;
   font-size: 12px;

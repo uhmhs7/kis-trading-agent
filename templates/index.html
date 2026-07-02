@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>KIS Trading Agent</title>
-    <link rel="stylesheet" href="/static/styles.css?v=3" />
+    <link rel="stylesheet" href="/static/styles.css?v=4" />
   </head>
   <body>
     <header class="topbar">
@@ -97,7 +97,9 @@
             </label>
             <label for="autoInterval">스캔 간격(초)</label>
             <input id="autoInterval" type="number" min="15" step="15" value="300" />
-            <label for="dashTokenInput">대시보드 토큰</label>
+            <label id="authLabel">계정</label>
+            <div id="authBox" class="auth-box"></div>
+            <label for="dashTokenInput" id="dashTokenLabel">대시보드 토큰</label>
             <input
               id="dashTokenInput"
               type="password"
